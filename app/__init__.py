@@ -2,6 +2,7 @@ from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
+from flask_cors import CORS
 from apscheduler.schedulers.background import BackgroundScheduler
 import os
 
@@ -21,6 +22,15 @@ def create_app(config_object=None):
         app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
         app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'change-me')
         app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 8 * 3600
+
+    # 初始化CORS，允许所有跨域请求
+    CORS(app, resources={
+        r"/api/*": {
+            "origins": "*",
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"]
+        }
+    })
 
     db.init_app(app)
     migrate.init_app(app, db)
