@@ -1,13 +1,14 @@
 from flask import Blueprint, request
 from . import scheduler, db
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Optional
 from .models import InventorySummary, Product
 from .utils import Response, role_required
 
 bp = Blueprint('reports', __name__)
 
 @bp.route('/inventory_alerts', methods=['GET'])
-@role_required(['admin', 'stock_operator', 'purchaser', 'finance'])
+@role_required(['admin', 'stock_operator', 'purchaser', 'finance', 'viewer'])
 def get_inventory_alerts():
     """获取库存预警信息"""
     # 查询所有库存异常的商品
@@ -26,7 +27,7 @@ def get_inventory_alerts():
             'product_id': product.product_id,
             'product_code': product.product_code,
             'product_name': product.product_name,
-            'current_stock': product.stock,
+            'stock': product.stock,
             'min_stock': product.min_stock,
             'max_stock': product.max_stock,
             'status': product.status,
@@ -39,7 +40,7 @@ def get_inventory_alerts():
             'product_id': product.product_id,
             'product_code': product.product_code,
             'product_name': product.product_name,
-            'current_stock': product.stock,
+            'stock': product.stock,
             'min_stock': product.min_stock,
             'max_stock': product.max_stock,
             'status': product.status,
@@ -65,12 +66,12 @@ def daily_summary():
     else:
         t = date.today()
     
-    rows = InventorySummary.query.filter_by(date=t).all()
+    rows = InventorySummary.query.filter_by(summary_date=t).all()
     items = [
         {
             'product_id': r.product_id,
-            'date': r.date.isoformat(),
-            'stock': r.stock
+            'date': r.summary_date.isoformat(),
+            'stock': r.closing_stock
         }
         for r in rows
     ]
@@ -90,7 +91,7 @@ def inventory_report():
     from .models import StockOperation
     
     # 获取当日库存汇总
-    summary_rows = InventorySummary.query.filter_by(date=report_date).all()
+    summary_rows = InventorySummary.query.filter_by(summary_date=report_date).all()
     
     # 获取当日库存操作记录
     start_time = datetime.combine(report_date, datetime.min.time())
@@ -119,7 +120,7 @@ def inventory_report():
     for r in summary_rows:
         summary_items.append({
             'product_id': r.product_id,
-            'stock': r.stock
+            'stock': r.closing_stock
         })
     
     operation_items = []
@@ -130,7 +131,8 @@ def inventory_report():
             'op_type': op.op_type,
             'quantity': op.quantity,
             'created_at': op.created_at.isoformat(),
-            'reason': op.reason
+            'reason': op.reason,
+            'order_id': op.order_id,
         })
     
     return Response.success({
@@ -156,7 +158,6 @@ def stock_trend():
     
     # 默认时间范围：最近30天
     if not start_date:
-        from datetime import timedelta
         start_date = (date.today() - timedelta(days=30)).strftime('%Y-%m-%d')
     if not end_date:
         end_date = date.today().strftime('%Y-%m-%d')
@@ -168,9 +169,11 @@ def stock_trend():
     from .models import StockOperation
     
     # 构建查询
+    start_dt = datetime.combine(start, datetime.min.time())
+    end_dt = datetime.combine(end, datetime.max.time())
     query = StockOperation.query.filter(
-        StockOperation.created_at >= start,
-        StockOperation.created_at <= end
+        StockOperation.created_at >= start_dt,
+        StockOperation.created_at <= end_dt
     )
     
     # 如果指定了商品ID，则过滤
@@ -216,27 +219,35 @@ def stock_trend():
         'trend_data': result
     })
 
-def refresh_inventory_summary_python(target_date: date):
+def refresh_inventory_summary_python(target_date: Optional[date] = None):
     """刷新每日库存汇总"""
+    if target_date is None:
+        target_date = date.today()
     products = Product.query.all()
     
     with db.session.begin():
         for p in products:
             # 检查是否已存在该日期的汇总记录
-            exists = InventorySummary.query.filter_by(
-                product_id=p.product_id, date=target_date
-            ).first()
+            exists = InventorySummary.query.filter_by(product_id=p.product_id, summary_date=target_date).first()
+
+            total_value = (p.purchase_price or 0) * p.stock
             
             if exists:
-                # 更新现有记录
-                exists.stock = p.stock
+                # 更新现有记录（只做兜底快照，别指望它算报表）
+                exists.closing_stock = p.stock
+                exists.total_value = total_value
             else:
                 # 创建新记录
                 db.session.add(
                     InventorySummary(
                         product_id=p.product_id,
-                        date=target_date,
-                        stock=p.stock
+                        summary_date=target_date,
+                        opening_stock=p.stock,
+                        incoming_qty=0,
+                        outgoing_qty=0,
+                        adjustment_qty=0,
+                        closing_stock=p.stock,
+                        total_value=total_value,
                     )
                 )
     
@@ -249,12 +260,19 @@ def generate_inventory_alerts():
     print(f"Inventory alerts generated at {datetime.now()}")
     return True
 
-def schedule_jobs():
+def schedule_jobs(app):
     """配置定时任务"""
+    def _refresh_inventory_summary():
+        with app.app_context():
+            refresh_inventory_summary_python()
+
+    def _generate_inventory_alerts():
+        with app.app_context():
+            generate_inventory_alerts()
+
     # 每天00:00生成库存汇总
     scheduler.add_job(
-        func=refresh_inventory_summary_python,
-        args=[date.today()],
+        func=_refresh_inventory_summary,
         trigger='cron',
         hour=0,
         minute=0,
@@ -264,7 +282,7 @@ def schedule_jobs():
     
     # 每1小时生成库存预警
     scheduler.add_job(
-        func=generate_inventory_alerts,
+        func=_generate_inventory_alerts,
         trigger='cron',
         hour='*',
         minute=0,

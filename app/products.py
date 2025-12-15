@@ -1,4 +1,6 @@
 from flask import Blueprint, request, g
+from sqlalchemy import or_
+from sqlalchemy.orm import joinedload
 from .models import Product, StockOperation
 from . import db
 from .schemas import product_to_dict
@@ -10,7 +12,7 @@ bp = Blueprint('products', __name__)
 @role_required(['admin', 'stock_operator', 'purchaser'])
 def create_product():
     data = request.json or {}
-    required = ['product_code', 'product_name', 'purchase_price', 'sale_price']
+    required = ['product_code', 'product_name', 'category_id', 'purchase_price', 'sale_price']
     
     for f in required:
         if f not in data:
@@ -42,13 +44,20 @@ def create_product():
 def list_products():
     page = int(request.args.get('page', 1))
     size = int(request.args.get('size', 20))
+    keyword = (request.args.get('keyword') or '').strip()
     
     # 过滤条件
     category_id = request.args.get('category_id')
     supplier_id = request.args.get('supplier_id')
     status = request.args.get('status')
     
-    q = Product.query
+    q = Product.query.options(joinedload(Product.category), joinedload(Product.supplier))
+
+    if keyword:
+        q = q.filter(or_(
+            Product.product_code.ilike(f'%{keyword}%'),
+            Product.product_name.ilike(f'%{keyword}%'),
+        ))
     
     if category_id:
         q = q.filter_by(category_id=category_id)
@@ -115,9 +124,9 @@ def delete_product(product_id):
     # 检查是否存在库存流水，若存在则只能禁用
     if StockOperation.query.filter_by(product_id=product_id).first():
         # 禁用商品
-        product.status = 'disabled'
+        product.status = 'inactive'
         db.session.commit()
-        return Response.success({'message': 'Product disabled instead of deleted (stock operations exist)', 'product_id': product_id})
+        return Response.success({'message': 'Product set to inactive instead of deleted (stock operations exist)', 'product_id': product_id})
     
     # 直接删除
     db.session.delete(product)

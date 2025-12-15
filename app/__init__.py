@@ -1,10 +1,25 @@
-from flask import Flask
+import os
+import warnings
+
+from flask import Flask, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from flask_jwt_extended import JWTManager
 from flask_cors import CORS
+from sqlalchemy.exc import SQLAlchemyError
+from werkzeug.exceptions import HTTPException
+
+# APScheduler 3.x 会间接 import pkg_resources；setuptools 新版会吵这个 UserWarning。
+# 这不是我们项目代码的问题，别让它污染启动日志。
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API\..*",
+    category=UserWarning,
+    module=r"apscheduler(\..*)?",
+)
+
 from apscheduler.schedulers.background import BackgroundScheduler
-import os
+from apscheduler.schedulers.base import STATE_RUNNING
 
 db = SQLAlchemy()
 migrate = Migrate()
@@ -36,6 +51,29 @@ def create_app(config_object=None):
     migrate.init_app(app, db)
     jwt.init_app(app)
 
+    # 让 JWT 报错也走统一返回格式（不然前端会吃到 {"msg": "..."} 这种怪东西）
+    from .utils import Response
+
+    @jwt.unauthorized_loader
+    def _jwt_missing_token(reason: str):
+        return Response.error(401, reason)
+
+    @jwt.invalid_token_loader
+    def _jwt_invalid_token(reason: str):
+        return Response.error(401, reason)
+
+    @jwt.expired_token_loader
+    def _jwt_expired_token(_jwt_header, _jwt_payload):
+        return Response.error(401, 'Token has expired')
+
+    @jwt.revoked_token_loader
+    def _jwt_revoked_token(_jwt_header, _jwt_payload):
+        return Response.error(401, 'Token has been revoked')
+
+    @jwt.needs_fresh_token_loader
+    def _jwt_needs_fresh_token(_jwt_header, _jwt_payload):
+        return Response.error(401, 'Fresh token required')
+
     # register blueprints
     from .auth import bp as auth_bp
     from .products import bp as products_bp
@@ -47,39 +85,52 @@ def create_app(config_object=None):
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(products_bp, url_prefix='/api/products')
+    app.register_blueprint(categories_bp, url_prefix='/api/categories')
+    app.register_blueprint(suppliers_bp, url_prefix='/api/suppliers')
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
     app.register_blueprint(orders_bp, url_prefix='/api/orders')
     app.register_blueprint(reports_bp, url_prefix='/api/reports')
     app.register_blueprint(categories_bp, url_prefix='/api/categories')
     app.register_blueprint(suppliers_bp, url_prefix='/api/suppliers')
 
-    # scheduler startup
-    from .reports import schedule_jobs
-    schedule_jobs()
+    _init_scheduler(app)
 
     # 统一错误处理
     @app.errorhandler(Exception)
     def handle_exception(e):
         from .utils import AppError
-        
+
         if isinstance(e, AppError):
-            # 自定义异常
-            return {
-                'code': e.code,
-                'message': e.message,
-                'data': e.data
-            }, e.code
-        else:
-            # 其他异常
-            code = getattr(e, 'code', 500)
+            status = e.code if isinstance(e.code, int) and 100 <= e.code <= 599 else 400
+            return jsonify({'code': e.code, 'message': e.message, 'data': e.data}), status
+
+        if isinstance(e, HTTPException):
+            status = e.code or 500
+            return jsonify({'code': status, 'message': e.description or str(e), 'data': None}), status
+
+        # SQLAlchemy 会塞一个字符串 e.code（比如 e3q8），拿它当 HTTP 状态码会把响应搞成 HTTP/1.1 0 e3q8。
+        if isinstance(e, SQLAlchemyError):
             message = str(e)
-            if app.config['APP_ENV'] != 'development':
-                # 生产环境不泄露详细错误信息
-                message = 'Internal server error'
-            return {
-                'code': getattr(e, 'code', 50000),
-                'message': message,
-                'data': None
-            }, code
+            if app.config.get('APP_ENV') != 'development':
+                message = 'Database error'
+            return jsonify({'code': 50000, 'message': message, 'data': None}), 500
+
+        message = str(e)
+        if app.config.get('APP_ENV') != 'development':
+            message = 'Internal server error'
+        return jsonify({'code': 50000, 'message': message, 'data': None}), 500
 
     return app
+
+
+def _init_scheduler(app: Flask) -> None:
+    """初始化并启动定时任务（开发热重载下避免重复启动）。"""
+    # Flask debug reloader 会启动父/子两个进程；只在子进程里跑 scheduler。
+    if app.debug and os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+        return
+
+    from .reports import schedule_jobs
+
+    schedule_jobs(app)
+    if scheduler.state != STATE_RUNNING:
+        scheduler.start()

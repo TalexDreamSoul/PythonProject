@@ -71,6 +71,9 @@ def create_order():
             # 执行库存操作
             before_stock = product.stock
             so_type = 'in' if order_type == 'purchase' else 'out'
+
+            # 计算商品总价（后面写入库存流水）
+            item_total = unit_price * quantity
             
             if order_type == 'purchase':
                 # 采购订单：增加库存
@@ -85,6 +88,7 @@ def create_order():
             update_product_status(product)
             
             # 记录库存操作
+            reason_enum = 'purchase' if order_type == 'purchase' else 'sale'
             so = StockOperation(
                 product_id=product_id,
                 op_type=so_type,
@@ -92,13 +96,16 @@ def create_order():
                 stock_before=before_stock,
                 stock_after=product.stock,
                 order_id=order.order_id,
-                reason=f'order {order_id}',
-                operator_id=g.current_user.user_id
+                unit_price=unit_price,
+                total_price=item_total,
+                operator_id=g.current_user.user_id,
+                user_id=g.current_user.user_id,
+                operator_action=f'order_{order_type}',
+                reason=reason_enum,
+                notes=f'order {order_id}',
             )
             db.session.add(so)
-            
-            # 计算商品总价
-            item_total = unit_price * quantity
+
             total += item_total
         
         # 更新订单总金额和状态
@@ -114,20 +121,36 @@ def list_orders():
     size = int(request.args.get('size', 20))
     order_type = request.args.get('order_type')
     status = request.args.get('status')
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
+    keyword = (request.args.get('keyword') or '').strip()
+    start_date = (request.args.get('start_date') or '').strip()
+    end_date = (request.args.get('end_date') or '').strip()
+
+    def parse_dt(value: str, is_end: bool):
+        if not value:
+            return None
+        try:
+            if len(value) == 10:
+                d = datetime.strptime(value, '%Y-%m-%d').date()
+                return datetime.combine(d, datetime.max.time() if is_end else datetime.min.time())
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
     
     q = Order.query
     
     # 过滤条件
+    if keyword:
+        q = q.filter(Order.order_id.ilike(f'%{keyword}%'))
     if order_type:
         q = q.filter_by(order_type=order_type)
     if status:
         q = q.filter_by(status=status)
-    if start_date:
-        q = q.filter(Order.created_at >= start_date)
-    if end_date:
-        q = q.filter(Order.created_at <= end_date)
+    start_dt = parse_dt(start_date, False)
+    if start_dt:
+        q = q.filter(Order.created_at >= start_dt)
+    end_dt = parse_dt(end_date, True)
+    if end_dt:
+        q = q.filter(Order.created_at <= end_dt)
     
     # 按创建时间倒序排列
     q = q.order_by(Order.created_at.desc())

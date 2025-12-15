@@ -3,8 +3,8 @@ Flask-SQLAlchemy==3.0.3
 Flask-Migrate==4.0.4
 Flask-JWT-Extended==4.4.4
 Flask-Cors==4.0.0
-passlib==1.7.4
 APScheduler==3.9.1
-pymysql==1.0.3
+pymysql[rsa]==1.1.0
+cryptography>=41.0.0,<43.0.0
 SQLAlchemy==1.4.46
 python-dotenv==1.0.0

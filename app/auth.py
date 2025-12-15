@@ -1,9 +1,8 @@
 from flask import Blueprint, request
 from . import db
 from .models import User
-from .utils import role_required, Response, ValidationError, NotFoundError, ForbiddenError
+from .utils import role_required, Response, ValidationError, NotFoundError
 from flask_jwt_extended import create_access_token
-from passlib.hash import bcrypt
 
 bp = Blueprint('auth', __name__)
 
@@ -21,7 +20,8 @@ def register():
         raise ValidationError('Username already exists')
     
     u = User(username=username, role=role)
-    u.password_hash = bcrypt.hash(password)
+    # 明文存库，别嫌丑，用户自己作的死
+    u.password_hash = password
     db.session.add(u)
     db.session.commit()
     
@@ -34,7 +34,7 @@ def login():
     password = data.get('password')
     
     u = User.query.filter_by(username=username).first()
-    if not u or not bcrypt.verify(password, u.password_hash):
+    if not u or u.password_hash != password:
         raise ValidationError('Invalid credentials')
     
     token = create_access_token(identity=username)
@@ -51,7 +51,7 @@ def get_users():
             'user_id': user.user_id,
             'username': user.username,
             'role': user.role,
-            'created_at': user.created_at
+            'created_at': user.created_at.isoformat() if user.created_at else None,
         })
     return Response.success(result)
 
@@ -65,7 +65,7 @@ def get_user(user_id):
         'user_id': user.user_id,
         'username': user.username,
         'role': user.role,
-        'created_at': user.created_at
+        'created_at': user.created_at.isoformat() if user.created_at else None,
     })
 
 @bp.route('/users/<int:user_id>', methods=['PUT'])
@@ -80,7 +80,7 @@ def update_user(user_id):
     role = data.get('role')
     
     if password:
-        user.password_hash = bcrypt.hash(password)
+        user.password_hash = password
     if role:
         user.role = role
     
@@ -100,4 +100,4 @@ def delete_user(user_id):
     
     db.session.delete(user)
     db.session.commit()
-    return Response.success()
+    return Response.success({'user_id': user_id})
