@@ -50,3 +50,17 @@ def inventory_summary_to_dict(summary):
         'product_id': summary.product_id,
         'stock': summary.stock
     }
+
+def category_to_dict(category):
+    return {
+        'category_id': category.category_id,
+        'category_name': category.category_name,
+        'description': category.description
+    }
+
+def supplier_to_dict(supplier):
+    return {
+        'supplier_id': supplier.supplier_id,
+        'supplier_name': supplier.supplier_name,
+        'contact_info': supplier.contact_info
+    }

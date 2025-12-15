@@ -42,12 +42,16 @@ def create_app(config_object=None):
     from .stock import bp as stock_bp
     from .orders import bp as orders_bp
     from .reports import bp as reports_bp
+    from .categories import bp as categories_bp
+    from .suppliers import bp as suppliers_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(products_bp, url_prefix='/api/products')
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
     app.register_blueprint(orders_bp, url_prefix='/api/orders')
     app.register_blueprint(reports_bp, url_prefix='/api/reports')
+    app.register_blueprint(categories_bp, url_prefix='/api/categories')
+    app.register_blueprint(suppliers_bp, url_prefix='/api/suppliers')
 
     # scheduler startup
     from .reports import schedule_jobs
