@@ -6,7 +6,7 @@ from .models import Category, Product
 from .schemas import category_to_dict
 from .utils import Response, ValidationError, NotFoundError, role_required
 
-bp = Blueprint('categories', __name__)
+bp = Blueprint('categories_bp', __name__)
 
 
 @bp.route('', methods=['GET'])

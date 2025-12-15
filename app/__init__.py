@@ -87,8 +87,6 @@ def create_app(config_object=None):
     app.register_blueprint(stock_bp, url_prefix='/api/stock')
     app.register_blueprint(orders_bp, url_prefix='/api/orders')
     app.register_blueprint(reports_bp, url_prefix='/api/reports')
-    app.register_blueprint(categories_bp, url_prefix='/api/categories')
-    app.register_blueprint(suppliers_bp, url_prefix='/api/suppliers')
 
     _init_scheduler(app)
 
