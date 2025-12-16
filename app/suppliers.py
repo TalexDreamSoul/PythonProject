@@ -1,16 +1,24 @@
+"""供应商管理，采购找不到联系人就找我们算账。"""
+
 from flask import Blueprint, request
 from sqlalchemy import func
 
 from . import db
-from .models import Supplier, Product
+from .models import Product, Supplier
 from .schemas import supplier_to_dict
-from .utils import Response, ValidationError, NotFoundError, role_required
+from .utils import (
+    NotFoundError,
+    Response,
+    ValidationError,
+    role_required,
+)
 
 bp = Blueprint('suppliers', __name__)
 
 
 @bp.route('', methods=['GET'])
 def list_suppliers():
+    """列出供应商并附带商品数量统计。"""
     page = int(request.args.get('page', 1))
     size = int(request.args.get('size', 20))
     keyword = (request.args.get('keyword') or '').strip()
@@ -47,6 +55,7 @@ def list_suppliers():
 @bp.route('', methods=['POST'])
 @role_required(['admin', 'purchaser', 'stock_operator'])
 def create_supplier():
+    """新建供应商，最少得有名字。"""
     data = request.json or {}
     name = (data.get('supplier_name') or '').strip()
 
@@ -68,6 +77,7 @@ def create_supplier():
 
 @bp.route('/<int:supplier_id>', methods=['GET'])
 def get_supplier(supplier_id: int):
+    """取单个供应商详情。"""
     supplier = Supplier.query.get(supplier_id)
     if not supplier:
         raise NotFoundError('Supplier not found')
@@ -77,6 +87,7 @@ def get_supplier(supplier_id: int):
 @bp.route('/<int:supplier_id>', methods=['PUT'])
 @role_required(['admin', 'purchaser', 'stock_operator'])
 def update_supplier(supplier_id: int):
+    """更新供应商档案，空字段自动置None。"""
     supplier = Supplier.query.get(supplier_id)
     if not supplier:
         raise NotFoundError('Supplier not found')
@@ -105,6 +116,7 @@ def update_supplier(supplier_id: int):
 @bp.route('/<int:supplier_id>', methods=['DELETE'])
 @role_required(['admin'])
 def delete_supplier(supplier_id: int):
+    """删除供应商，若还绑定商品就不许删。"""
     supplier = Supplier.query.get(supplier_id)
     if not supplier:
         raise NotFoundError('Supplier not found')

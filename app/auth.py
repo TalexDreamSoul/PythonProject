@@ -1,13 +1,17 @@
+"""认证模块：不校验清楚，让谁进系统谁当爹？"""
+
 from flask import Blueprint, request
+from flask_jwt_extended import create_access_token
+
 from . import db
 from .models import User
-from .utils import role_required, Response, ValidationError, NotFoundError
-from flask_jwt_extended import create_access_token
+from .utils import NotFoundError, Response, ValidationError, role_required
 
 bp = Blueprint('auth', __name__)
 
 @bp.route('/register', methods=['POST'])
 def register():
+    """注册接口，就图省事不加花里胡哨的。"""
     data = request.json or {}
     username = data.get('username')
     password = data.get('password')
@@ -29,6 +33,7 @@ def register():
 
 @bp.route('/login', methods=['POST'])
 def login():
+    """最朴素的登录，用户名密码对上就发token。"""
     data = request.json or {}
     username = data.get('username')
     password = data.get('password')
@@ -44,6 +49,7 @@ def login():
 @bp.route('/users', methods=['GET'])
 @role_required('admin')
 def get_users():
+    """用户列表，管理员自己看着玩。"""
     users = User.query.all()
     result = []
     for user in users:
@@ -58,6 +64,7 @@ def get_users():
 @bp.route('/users/<int:user_id>', methods=['GET'])
 @role_required('admin')
 def get_user(user_id):
+    """单个用户详情，排错用。"""
     user = User.query.get(user_id)
     if not user:
         raise NotFoundError('User not found')
@@ -71,6 +78,7 @@ def get_user(user_id):
 @bp.route('/users/<int:user_id>', methods=['PUT'])
 @role_required('admin')
 def update_user(user_id):
+    """改密码/角色的入口，别让普通人碰。"""
     user = User.query.get(user_id)
     if not user:
         raise NotFoundError('User not found')
@@ -94,6 +102,7 @@ def update_user(user_id):
 @bp.route('/users/<int:user_id>', methods=['DELETE'])
 @role_required('admin')
 def delete_user(user_id):
+    """删用户，管理员手抖可就完蛋。"""
     user = User.query.get(user_id)
     if not user:
         raise NotFoundError('User not found')

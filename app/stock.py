@@ -1,14 +1,23 @@
-from flask import Blueprint, request, g
-from .models import Product, StockOperation, Order
-from . import db
-from .utils import role_required, Response, ValidationError, NotFoundError
-from .schemas import stock_operation_to_dict
-from sqlalchemy import select
-from sqlalchemy import or_
-from sqlalchemy.orm import joinedload
+"""库存中心：所有入库、出库、调整都在这调度，别在别的模块乱搞。"""
+
 from decimal import Decimal
 from typing import Optional
-from datetime import datetime, timedelta
+
+from flask import Blueprint, g, request
+from sqlalchemy import or_, select
+from sqlalchemy.orm import joinedload
+
+from . import db
+from .models import Order, Product, StockOperation
+from .schemas import stock_operation_to_dict
+from .utils import (
+    NotFoundError,
+    Response,
+    ValidationError,
+    parse_date_range,
+    role_required,
+    sync_product_status,
+)
 
 bp = Blueprint('stock', __name__)
 
@@ -26,17 +35,10 @@ def normalize_stock_reason(op_type: str, raw_reason: Optional[str]):
         return raw_reason, None
     return defaults.get(op_type, 'adjustment'), raw_reason
 
-# 辅助函数：更新商品库存状态
-def update_product_status(product):
-    """根据库存数量更新商品状态"""
-    if product.stock <= 0 or product.stock <= product.min_stock:
-        product.status = 'out_of_stock'
-    else:
-        product.status = 'active'
-
 @bp.route('/in', methods=['POST'])
 @role_required(['admin', 'stock_operator'])
 def stock_in():
+    """普通入库接口，采购完了记得调它，不然库存永远是0。"""
     data = request.json or {}
     product_id = data.get('product_id')
     quantity = int(data.get('quantity', 0))
@@ -70,7 +72,7 @@ def stock_in():
         product.stock += quantity
         
         # 更新商品状态
-        update_product_status(product)
+        sync_product_status(product)
 
         if unit_price_raw is not None:
             unit_price = Decimal(str(unit_price_raw))
@@ -102,6 +104,7 @@ def stock_in():
 @bp.route('/out', methods=['POST'])
 @role_required(['admin', 'stock_operator', 'cashier'])
 def stock_out():
+    """出库接口，销售/调拨都走这，库存不足自己长眼睛看报错。"""
     data = request.json or {}
     product_id = data.get('product_id')
     quantity = int(data.get('quantity', 0))
@@ -139,7 +142,7 @@ def stock_out():
         product.stock -= quantity
         
         # 更新商品状态
-        update_product_status(product)
+        sync_product_status(product)
 
         if unit_price_raw is not None:
             unit_price = Decimal(str(unit_price_raw))
@@ -171,6 +174,7 @@ def stock_out():
 @bp.route('/adjust', methods=['POST'])
 @role_required(['admin', 'stock_operator'])
 def adjust_stock():
+    """库存调整，一次性把手工盘点结果写进去。"""
     data = request.json or {}
     product_id = data.get('product_id')
     new_stock = int(data.get('new_stock', 0))
@@ -198,7 +202,7 @@ def adjust_stock():
         product.stock = new_stock
         
         # 更新商品状态
-        update_product_status(product)
+        sync_product_status(product)
 
         reason, extra_note = normalize_stock_reason('adjust', raw_reason)
         merged_notes = ' '.join([x for x in [extra_note, notes] if x])
@@ -235,16 +239,7 @@ def get_stock_operations():
 
     q = StockOperation.query.options(joinedload(StockOperation.product))
 
-    def parse_dt(value: str, is_end: bool):
-        if not value:
-            return None
-        try:
-            if len(value) == 10:
-                d = datetime.strptime(value, '%Y-%m-%d').date()
-                return datetime.combine(d, datetime.max.time() if is_end else datetime.min.time())
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
+    start_dt, end_dt = parse_date_range(start_date, end_date)
     
     # 过滤条件
     if product_id:
@@ -257,11 +252,9 @@ def get_stock_operations():
             Product.product_name.ilike(f'%{keyword}%'),
         ))
 
-    start_dt = parse_dt(start_date, False)
     if start_dt:
         q = q.filter(StockOperation.created_at >= start_dt)
 
-    end_dt = parse_dt(end_date, True)
     if end_dt:
         q = q.filter(StockOperation.created_at <= end_dt)
     

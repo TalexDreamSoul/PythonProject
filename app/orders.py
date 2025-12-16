@@ -1,24 +1,27 @@
-from flask import Blueprint, request, g
-from .models import Order, Product, StockOperation
-from . import db
-from .utils import role_required, Response, ValidationError, NotFoundError
-from .schemas import order_to_dict, stock_operation_to_dict
+"""订单模块：采购/销售都要经过它，流程要是乱了老王我砸键盘。"""
+
 from decimal import Decimal
-from datetime import datetime
+
+from flask import Blueprint, g, request
+
+from . import db
+from .models import Order, Product, StockOperation
+from .schemas import order_to_dict, stock_operation_to_dict
+from .utils import (
+    NotFoundError,
+    Response,
+    ValidationError,
+    parse_date_range,
+    role_required,
+    sync_product_status,
+)
 
 bp = Blueprint('orders', __name__)
-
-# 辅助函数：更新商品库存状态
-def update_product_status(product):
-    """根据库存数量更新商品状态"""
-    if product.stock <= 0 or product.stock <= product.min_stock:
-        product.status = 'out_of_stock'
-    else:
-        product.status = 'active'
 
 @bp.route('', methods=['POST'])
 @role_required(['admin', 'purchaser', 'cashier'])
 def create_order():
+    """订单录入，一次请求把多个商品出入库流水全搞定。"""
     data = request.json or {}
     order_id = data.get('order_id')
     order_type = data.get('order_type')
@@ -85,7 +88,7 @@ def create_order():
                 product.stock -= quantity
             
             # 更新商品状态
-            update_product_status(product)
+            sync_product_status(product)
             
             # 记录库存操作
             reason_enum = 'purchase' if order_type == 'purchase' else 'sale'
@@ -117,6 +120,7 @@ def create_order():
 @bp.route('', methods=['GET'])
 @role_required(['admin', 'stock_operator', 'purchaser', 'cashier', 'finance', 'viewer'])
 def list_orders():
+    """订单列表，支持 ID 模糊搜和时间范围过滤。"""
     page = int(request.args.get('page', 1))
     size = int(request.args.get('size', 20))
     order_type = request.args.get('order_type')
@@ -125,17 +129,8 @@ def list_orders():
     start_date = (request.args.get('start_date') or '').strip()
     end_date = (request.args.get('end_date') or '').strip()
 
-    def parse_dt(value: str, is_end: bool):
-        if not value:
-            return None
-        try:
-            if len(value) == 10:
-                d = datetime.strptime(value, '%Y-%m-%d').date()
-                return datetime.combine(d, datetime.max.time() if is_end else datetime.min.time())
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    
+    start_dt, end_dt = parse_date_range(start_date, end_date)
+
     q = Order.query
     
     # 过滤条件
@@ -145,10 +140,8 @@ def list_orders():
         q = q.filter_by(order_type=order_type)
     if status:
         q = q.filter_by(status=status)
-    start_dt = parse_dt(start_date, False)
     if start_dt:
         q = q.filter(Order.created_at >= start_dt)
-    end_dt = parse_dt(end_date, True)
     if end_dt:
         q = q.filter(Order.created_at <= end_dt)
     
@@ -166,6 +159,7 @@ def list_orders():
 @bp.route('/<string:order_id>', methods=['GET'])
 @role_required(['admin', 'stock_operator', 'purchaser', 'cashier', 'finance', 'viewer'])
 def get_order(order_id):
+    """拿单个订单详情，用来在详情页兜底。"""
     order = Order.query.get(order_id)
     if not order:
         raise NotFoundError('Order not found')
@@ -174,6 +168,7 @@ def get_order(order_id):
 @bp.route('/<string:order_id>/operations', methods=['GET'])
 @role_required(['admin', 'stock_operator', 'finance', 'viewer'])
 def get_order_operations(order_id):
+    """查看订单对应的库存流水，方便核账。"""
     # 验证订单是否存在
     if not Order.query.get(order_id):
         raise NotFoundError('Order not found')
@@ -184,6 +179,7 @@ def get_order_operations(order_id):
 @bp.route('/<string:order_id>/status', methods=['PUT'])
 @role_required(['admin', 'stock_operator'])
 def update_order_status(order_id):
+    """状态流转接口，流程不对直接掐断。"""
     order = Order.query.get(order_id)
     if not order:
         raise NotFoundError('Order not found')

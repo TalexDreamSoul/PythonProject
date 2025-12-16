@@ -1,53 +1,45 @@
-from flask import Blueprint, request
-from . import scheduler, db
+"""报表中心，定时任务也归老王管。"""
+
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Dict, List, Optional
+
+from flask import Blueprint, request
+
+from . import db, scheduler
 from .models import InventorySummary, Product
 from .utils import Response, role_required
 
 bp = Blueprint('reports', __name__)
 
+
+def _serialize_alert_item(product: Product, alert_type: str) -> Dict[str, object]:
+    """把商品转成预警结构体，减少重复字段。"""
+    return {
+        'product_id': product.product_id,
+        'product_code': product.product_code,
+        'product_name': product.product_name,
+        'stock': product.stock,
+        'min_stock': product.min_stock,
+        'max_stock': product.max_stock,
+        'status': product.status,
+        'alert_type': alert_type,
+    }
+
+
+def _fetch_alert_products() -> Dict[str, List[Product]]:
+    """拆分库存上下限异常的商品集合。"""
+    return {
+        'low': Product.query.filter(Product.stock <= Product.min_stock).all(),
+        'high': Product.query.filter(Product.stock >= Product.max_stock).all(),
+    }
+
 @bp.route('/inventory_alerts', methods=['GET'])
 @role_required(['admin', 'stock_operator', 'purchaser', 'finance', 'viewer'])
 def get_inventory_alerts():
     """获取库存预警信息"""
-    # 查询所有库存异常的商品
-    low_stock_products = Product.query.filter(
-        Product.stock <= Product.min_stock
-    ).all()
-    
-    high_stock_products = Product.query.filter(
-        Product.stock >= Product.max_stock
-    ).all()
-    
-    # 构造响应数据
-    low_stock_items = []
-    for product in low_stock_products:
-        low_stock_items.append({
-            'product_id': product.product_id,
-            'product_code': product.product_code,
-            'product_name': product.product_name,
-            'stock': product.stock,
-            'min_stock': product.min_stock,
-            'max_stock': product.max_stock,
-            'status': product.status,
-            'alert_type': 'low_stock'
-        })
-    
-    high_stock_items = []
-    for product in high_stock_products:
-        high_stock_items.append({
-            'product_id': product.product_id,
-            'product_code': product.product_code,
-            'product_name': product.product_name,
-            'stock': product.stock,
-            'min_stock': product.min_stock,
-            'max_stock': product.max_stock,
-            'status': product.status,
-            'alert_type': 'high_stock'
-        })
-    
-    # 合并所有预警信息
+    alert_products = _fetch_alert_products()
+    low_stock_items = [_serialize_alert_item(p, 'low_stock') for p in alert_products['low']]
+    high_stock_items = [_serialize_alert_item(p, 'high_stock') for p in alert_products['high']]
     all_alerts = low_stock_items + high_stock_items
     
     return Response.success({
@@ -67,14 +59,11 @@ def daily_summary():
         t = date.today()
     
     rows = InventorySummary.query.filter_by(summary_date=t).all()
-    items = [
-        {
-            'product_id': r.product_id,
-            'date': r.summary_date.isoformat(),
-            'stock': r.closing_stock
-        }
-        for r in rows
-    ]
+    items = [{
+        'product_id': r.product_id,
+        'date': r.summary_date.isoformat(),
+        'stock': r.closing_stock
+    } for r in rows]
     
     return Response.success({'items': items})
 
@@ -103,45 +92,36 @@ def inventory_report():
     ).all()
     
     # 统计当日出入库数据
-    in_total = 0
-    out_total = 0
-    adjust_total = 0
-    
+    totals = {'in': 0, 'out': 0, 'adjust': 0}
     for op in stock_operations:
-        if op.op_type == 'in':
-            in_total += op.quantity
-        elif op.op_type == 'out':
-            out_total += op.quantity
+        bucket = op.op_type if op.op_type in ('in', 'out') else 'adjust'
+        if bucket == 'adjust':
+            totals[bucket] += abs(op.quantity)
         else:
-            adjust_total += abs(op.quantity)
+            totals[bucket] += op.quantity
     
-    # 构造响应数据
-    summary_items = []
-    for r in summary_rows:
-        summary_items.append({
-            'product_id': r.product_id,
-            'stock': r.closing_stock
-        })
+    summary_items = [{
+        'product_id': r.product_id,
+        'stock': r.closing_stock
+    } for r in summary_rows]
     
-    operation_items = []
-    for op in stock_operations:
-        operation_items.append({
-            'op_id': op.op_id,
-            'product_id': op.product_id,
-            'op_type': op.op_type,
-            'quantity': op.quantity,
-            'created_at': op.created_at.isoformat(),
-            'reason': op.reason,
-            'order_id': op.order_id,
-        })
+    operation_items = [{
+        'op_id': op.op_id,
+        'product_id': op.product_id,
+        'op_type': op.op_type,
+        'quantity': op.quantity,
+        'created_at': op.created_at.isoformat(),
+        'reason': op.reason,
+        'order_id': op.order_id,
+    } for op in stock_operations]
     
     return Response.success({
         'report_date': report_date.isoformat(),
         'summary': {
             'total_products': len(summary_rows),
-            'total_in': in_total,
-            'total_out': out_total,
-            'total_adjust': adjust_total
+            'total_in': totals['in'],
+            'total_out': totals['out'],
+            'total_adjust': totals['adjust']
         },
         'stock_summary': summary_items,
         'stock_operations': operation_items
@@ -183,33 +163,23 @@ def stock_trend():
     # 执行查询
     operations = query.all()
     
-    # 按日期和操作类型分组统计
     trend_data = {}
     current_date = start
-    
-    # 初始化日期范围
     while current_date <= end:
         date_str = current_date.strftime('%Y-%m-%d')
-        trend_data[date_str] = {
-            'date': date_str,
-            'in': 0,
-            'out': 0,
-            'adjust': 0
-        }
+        trend_data[date_str] = {'date': date_str, 'in': 0, 'out': 0, 'adjust': 0}
         current_date += timedelta(days=1)
     
-    # 统计数据
     for op in operations:
         op_date = op.created_at.date().strftime('%Y-%m-%d')
-        if op_date in trend_data:
-            if op.op_type == 'in':
-                trend_data[op_date]['in'] += op.quantity
-            elif op.op_type == 'out':
-                trend_data[op_date]['out'] += op.quantity
-            else:
-                trend_data[op_date]['adjust'] += abs(op.quantity)
+        bucket = trend_data.get(op_date)
+        if not bucket:
+            continue
+        if op.op_type == 'adjust':
+            bucket['adjust'] += abs(op.quantity)
+        else:
+            bucket[op.op_type] += op.quantity
     
-    # 转换为列表格式
     result = list(trend_data.values())
     
     return Response.success({

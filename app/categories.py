@@ -1,16 +1,24 @@
+"""分类管理，方便门店把一坨商品分门别类。"""
+
 from flask import Blueprint, request
 from sqlalchemy import func
 
 from . import db
 from .models import Category, Product
 from .schemas import category_to_dict
-from .utils import Response, ValidationError, NotFoundError, role_required
+from .utils import (
+    NotFoundError,
+    Response,
+    ValidationError,
+    role_required,
+)
 
 bp = Blueprint('categories_bp', __name__)
 
 
 @bp.route('', methods=['GET'])
 def list_categories():
+    """分页列出分类，还附带商品数和库存统计。"""
     page = int(request.args.get('page', 1))
     size = int(request.args.get('size', 20))
     keyword = (request.args.get('keyword') or '').strip()
@@ -47,6 +55,7 @@ def list_categories():
 @bp.route('', methods=['POST'])
 @role_required(['admin', 'stock_operator'])
 def create_category():
+    """新建分类，重名直接怼回去。"""
     data = request.json or {}
     name = (data.get('category_name') or '').strip()
     description = (data.get('description') or '').strip() or None
@@ -66,6 +75,7 @@ def create_category():
 
 @bp.route('/<int:category_id>', methods=['GET'])
 def get_category(category_id: int):
+    """分类详情，用来编辑时填充。"""
     category = Category.query.get(category_id)
     if not category:
         raise NotFoundError('Category not found')
@@ -75,6 +85,7 @@ def get_category(category_id: int):
 @bp.route('/<int:category_id>', methods=['PUT'])
 @role_required(['admin', 'stock_operator'])
 def update_category(category_id: int):
+    """更新分类字段，重名照旧打回。"""
     category = Category.query.get(category_id)
     if not category:
         raise NotFoundError('Category not found')
@@ -101,6 +112,7 @@ def update_category(category_id: int):
 @bp.route('/<int:category_id>', methods=['DELETE'])
 @role_required(['admin'])
 def delete_category(category_id: int):
+    """删除分类，挂了商品就不让删。"""
     category = Category.query.get(category_id)
     if not category:
         raise NotFoundError('Category not found')

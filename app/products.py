@@ -1,16 +1,20 @@
-from flask import Blueprint, request, g
+"""商品档案，每个字段都得交代清楚，不然仓库人员直接给你掀桌子。"""
+
+from flask import Blueprint, g, request
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
-from .models import Product, StockOperation
+
 from . import db
+from .models import Product, StockOperation
 from .schemas import product_to_dict
-from .utils import role_required, Response, ValidationError, NotFoundError
+from .utils import NotFoundError, Response, ValidationError, role_required
 
 bp = Blueprint('products', __name__)
 
 @bp.route('', methods=['POST'])
 @role_required(['admin', 'stock_operator', 'purchaser'])
 def create_product():
+    """新建商品档案，必填字段丢了直接骂用户。"""
     data = request.json or {}
     required = ['product_code', 'product_name', 'category_id', 'purchase_price', 'sale_price']
     
@@ -42,6 +46,7 @@ def create_product():
 
 @bp.route('', methods=['GET'])
 def list_products():
+    """商品列表查询，支持多条件筛选。"""
     page = int(request.args.get('page', 1))
     size = int(request.args.get('size', 20))
     keyword = (request.args.get('keyword') or '').strip()
@@ -73,6 +78,7 @@ def list_products():
 
 @bp.route('/<int:product_id>', methods=['GET'])
 def get_product(product_id):
+    """单个商品详情，常驻详情页数据源。"""
     product = Product.query.get(product_id)
     if not product:
         raise NotFoundError('Product not found')
@@ -81,6 +87,7 @@ def get_product(product_id):
 @bp.route('/<int:product_id>', methods=['PUT'])
 @role_required(['admin', 'stock_operator'])
 def update_product(product_id):
+    """更新商品信息，商品编码别想改。"""
     product = Product.query.get(product_id)
     if not product:
         raise NotFoundError('Product not found')
@@ -117,6 +124,7 @@ def update_product(product_id):
 @bp.route('/<int:product_id>', methods=['DELETE'])
 @role_required(['admin'])
 def delete_product(product_id):
+    """删除或禁用商品，有流水就只能停用。"""
     product = Product.query.get(product_id)
     if not product:
         raise NotFoundError('Product not found')
@@ -135,6 +143,7 @@ def delete_product(product_id):
 
 @bp.route('/<int:product_id>/stock', methods=['GET'])
 def get_product_stock(product_id):
+    """库存快捷查询，前端挂个弹窗就能用。"""
     product = Product.query.get(product_id)
     if not product:
         raise NotFoundError('Product not found')
