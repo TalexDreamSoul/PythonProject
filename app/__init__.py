@@ -36,8 +36,21 @@ def create_app(config_object=None):
         app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'change-me')
         app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 8 * 3600
 
-    # 初始化CORS，允许所有跨域请求
-    CORS(app, origins="*")
+    # 初始化CORS，增强配置以支持预检请求和所有所需的HTTP方法
+    CORS(app, resources={r"/api/*": {
+        "origins": "*",  # 允许所有来源
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],  # 允许所有常用HTTP方法
+        "allow_headers": ["Origin", "Content-Type", "Authorization"],  # 允许常用请求头
+        "supports_credentials": True  # 支持凭证
+    }})
+    
+    # 添加中间件确保OPTIONS请求能正确响应
+    @app.after_request
+    def after_request_func(response):
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Origin, Content-Type, Authorization"
+        return response
 
     db.init_app(app)
     migrate.init_app(app, db)
